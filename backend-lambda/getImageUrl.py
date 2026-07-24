@@ -23,6 +23,7 @@ UPLOAD_BUCKET = os.environ.get('UPLOAD_BUCKET')
 SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
 DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DYNAMODB_TABLE') )
 
+
 # get today's date in YYYY, mm, dd
 today = datetime.date.today()
 yyyy = today.strftime("%Y")
@@ -101,7 +102,7 @@ def lambda_handler(event, context):
             sqs_payload = {
                 'imageId': image_id,
                 'inputType': input_type,
-                'objectKey': object_db_link
+                'objectKey': object_key
             }
             object_db_link = object_key
             return_dict = {"imageId": image_id, "processedImage": base64_string}
@@ -136,4 +137,3 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'body': json.dumps({'error': 'Internal server pipeline error'})
         }
-
