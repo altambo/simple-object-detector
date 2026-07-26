@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: OmniDetection Serverless Pipeline Architecture (x86_64 Production)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Architectures:
+      - x86_64 # Enforces x86_64 as the global baseline architecture for all functions
+    LoggingConfig:
+      LogFormat: JSON
+
+Resources:
+  # 1. S3 Bucket configured for Static Website Hosting
+  HtmlStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-html-storage"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  # S3 Bucket Policy to allow public GET requests for website visitors
+  HtmlBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref HtmlStorageBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${HtmlStorageBucket}/*'
+
+  # 2. DynamoDB Database Table
+  IACJobStatusTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: IAC_JobStatusTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: image_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: image_id
+          KeyType: HASH
+
+  # 3. HTTP API Gateway with CORS updated to allow ALL headers
+  IACGatewayApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: IAC_GatewayApi
+      CorsConfiguration:
+        AllowOrigins:
+          - '*' 
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - '*' 
+
+  # 4. SQS Queue
+  IACQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: IAC_Queue
+      VisibilityTimeout: 180 
+
+  # 5. Python Lambda Function (IAC_getImageUrl)
+  GetImageUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: IAC_getImageUrl
+      Runtime: python3.12
+      CodeUri: ./backend-lambda/        
+      Handler: get_image_url.lambda_handler 
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref IACQueue
+          TABLE_NAME: !Ref IACJobStatusTable
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt IACQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IACJobStatusTable
+      Events:
+        PostRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref IACGatewayApi
+            Path: /
+            Method: post
+        GetRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref IACGatewayApi
+            Path: /{imageId}
+            Method: get
+
+  # 6. Container Lambda Function (IAC_processImage)
+  ProcessImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: IAC_processImage
+      PackageType: Image
+      Timeout: 180
+      MemorySize: 2048                  
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref IACJobStatusTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IACJobStatusTable
+      Events:
+        QueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IACQueue.Arn
+            BatchSize: 10
+    Metadata:
+      Dockerfile: Dockerfile            
+      DockerContext: ./backend-container 
+      DockerTag: latest
+      DockerBuildArgs:
+        # Replicates "--provenance false" by blocking multi-architecture manifest metadata
+        BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+
+Outputs:
+  HttpApiUrl:
+    Description: "Base URL of the OmniDetection HTTP API Gateway"
+    Value: !Sub "https://${IACGatewayApi}.execute-api.${AWS::Region}.amazonaws.com"
+  S3BucketName:
+    Description: "Name of the HTML S3 Bucket"
+    Value: !Ref HtmlStorageBucket
+  WebsiteURL:
+    Description: "URL for the hosted frontend website"
+    Value: !GetAtt HtmlStorageBucket.WebsiteURL
