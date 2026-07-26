@@ -13,6 +13,7 @@ credentials.json
 .aws-sam/
 .cdk.staging/
 cdk.out/
+samconfig.toml
 
 # ==========================================
 # Node.js Frontend (HTML/JS)
