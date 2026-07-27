@@ -1,6 +1,7 @@
-
-
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// CHANGED: Wire the script directly to the automated variable injected by deploy.sh
+const API_BASE_URL = window.ENV_CONFIG.API_URL;
 
 /// UX Helpers to avoid confusion between upload states
 function clearUrlInput() {
@@ -41,6 +42,7 @@ function updateStatus(message, state = 'DEFAULT') {
             break;
             
         case 'ERROR':
+        case 'FAILED': // Combined FAILED case to handle your catch block fallback cleanly
             statusBox.style.color = '#b91c1c';       // Bright red text
             statusBox.style.backgroundColor = '#fef2f2'; // Soft red background
             statusBox.style.borderColor = '#fecaca';     // Red border
@@ -67,22 +69,32 @@ async function processImage(event) {
     statusText.innerText = "Processing image via AWS...";
 
     // Geolocation
-    let city = "Unknown"
-    let state = "Unknown"
-    let country = "Unknown"
+    let city = "Unknown";
+    let state = "Unknown";
+    let country = "Unknown";
     try {
-        // Fetch location directly from the browser side (No VPC issues)
-        const geoResponse = await fetch('https://ip-api.com');
+        // Fetch securely over HTTPS to avoid browser Mixed Content blocks
+        const geoResponse = await fetch('https://ipapi.co');
+        
+        if (!geoResponse.ok) {
+            throw new Error(`HTTP error! status: ${geoResponse.status}`);
+        }
+        
         const geoData = await geoResponse.json();
+        
+        // Map the fields accurately from the ipapi.co JSON schema
         city = geoData.city || "Unknown";
-        state = geoData.regionName || "Unknown";
-        country = geoData.country || "Unknown";
+        state = geoData.region || "Unknown";       // ipapi.co uses 'region', not 'regionName'
+        country = geoData.country_name || "Unknown"; // ipapi.co uses 'country_name', not 'country'
+        
     } catch (err) {
-        statusText.innerText = `Geolocation failed: ${err}`;
+        console.error("Geolocation failed:", err);
+        // Fallback gracefully so the whole image upload doesn't crash
+        statusText.innerText = `Location unavailable.`;
     }
 
     let payload = {};
-    let image_id = "unknown ID"
+    let image_id = "unknown ID";
 
     if (fileInput) {
         // Convert local file to Base64 string
@@ -97,13 +109,12 @@ async function processImage(event) {
             image: urlInput
         };
     } else {
-        // statusText.innerText = "Please select a file or enter a web URL.";
         updateStatus("Please select a file or enter a web URL.", "DEFAULT");
         return;
     }
 
     try {
-        // CHANGED: Replaced API_ENDPOINT with API_BASE_URL from config.js
+        // CHANGED: Pointing to the global dynamic API_BASE_URL context
         const initial_response = await fetch(API_BASE_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -121,19 +132,28 @@ async function processImage(event) {
 
         // 2. Check in database for progress updates
         updateStatus(`Job ${image_id} submitted for processing.`, "PROCESSING");
-        const statusUrl = `${API_BASE_URL}/${image_id}`;
+        
+        // CHANGED: Fixed path formatting. It handles trailing slashes cleanly out of API Gateway
+        const cleanBaseUrl = API_BASE_URL.replace(/\/$/, "");
+        const statusUrl = `${cleanBaseUrl}/${image_id}`;
+
+        // RECOMMENDED: Switch from a path variable to a URL parameter string
+        // const statusUrl = `${cleanBaseUrl}/status?imageId=${encodeURIComponent(image_id)}`;
+
 
         const status_response = await fetch(statusUrl);
         if (!status_response.ok) {
+            // FIXED: Standardized undefined 'statusResponse' syntax variable bug to local 'status_response'
             updateStatus(
-                `Initial GET status check failed with status: ${statusResponse.status}`, 
+                `Initial GET status check failed with status: ${status_response.status}. ${status_response}`, 
                 "ERROR"
             );
             return;
         }
 
         let poll_data = await status_response.json();
-        let poll_status = String(poll_data.status).toUpperCase()
+        let poll_status = String(poll_data.status).toUpperCase();
+        let poll_message = String(poll_data.message);
 
         // 3. Polling Logic (While loop based strictly on the GET response data)
         const startTime = Date.now();
@@ -152,7 +172,7 @@ async function processImage(event) {
             }
             // update browser status
             updateStatus(
-                `Query ${counter}: Status: ${poll_status}`, 
+                `Query ${counter}: Status: ${poll_status} | Message: ${poll_message}`, 
                 'PROCESSING'
             );
             
@@ -166,13 +186,14 @@ async function processImage(event) {
                 return;
             }
             poll_data = await repeat_response.json();
-            poll_status = String(poll_data.status).toUpperCase()
+            poll_status = String(poll_data.status).toUpperCase();
+            poll_message = String(poll_data.message);
         }
         
         // Evaluation after loop termination
         if (poll_status === 'COMPLETE' && poll_data.s3OutputUrl) {
             updateStatus(
-                `Processing suceeded. ${poll_data.message}`, 
+                `Processing succeeded. ${poll_data.message || ""}`, 
                 'COMPLETE'
             );
             // Hook an event listener to the image element first
@@ -181,20 +202,21 @@ async function processImage(event) {
                 resultImage.style.display = "block";
             };
             // 2. Set the image source to kick off the background network fetch
-            // resultImage.src = `${poll_data.s3OutputUrl}?t=${new Date().getTime()}`;
             resultImage.src = `${poll_data.s3OutputUrl}`;
             updateStatus(
-                `Processing suceeded. Output image is displayed below.`, 
+                `Processing succeeded. Output image is displayed below.`, 
                 'COMPLETE'
             );
         } else {
+            // FIXED: Variable string fallback reference error from poll_status.message to poll_data.message
             updateStatus(
-                `Error processing image. Final message ${poll_status.message} : Image_id ${image_id}`, 
+                `Error processing image. Final message ${poll_data.message || 'No description'} : Image_id ${image_id}`, 
                 'ERROR'
             );
         }
 
     } catch (err) {
+        // FIXED: Maps to the new unified style selector rule in updateStatus switch tree
         updateStatus(
                 `Error processing image. Final state ${err}. Image_id ${image_id}`, 
                 "FAILED"
