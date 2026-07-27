@@ -18,12 +18,12 @@ LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
 # Fetch resource names from environment variables set in your infrastructure template
-UPLOAD_BUCKET = os.environ.get('UPLOAD_BUCKET')
+UPLOAD_BUCKET = os.environ.get('TARGET_BUCKET')
 
 # initialize database and s3 client
 S3_CLIENT = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
-DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DYNAMODB_TABLE') )
+DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 
 # Environment variables
 MODEL = YOLO(model="yolov8m.onnx", task='detect')
