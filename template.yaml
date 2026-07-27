@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: OmniDetection Serverless Pipeline Architecture (x86_64 Production)
+Description: Simple Object Detector Serverless Pipeline Architecture (x86_64 Production)
 
 Globals:
   Function:
@@ -11,12 +11,21 @@ Globals:
     LoggingConfig:
       LogFormat: JSON
 
+# parameters used in deploy.sh
+Parameters:
+  LowerAppName:
+    Type: String
+    Description: "Lowercased application name enforced by deploy.sh"
+  EnvironmentName:
+    Type: String
+    Description: "Targeted deployment stage environment (dev/prod)"
+
 Resources:
   # 1. S3 Bucket configured for Static Website Hosting
   HtmlStorageBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::StackName}-html-storage"
+      BucketName: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
       WebsiteConfiguration:
         IndexDocument: index.html
         ErrorDocument: index.html
@@ -41,23 +50,23 @@ Resources:
             Resource: !Sub 'arn:aws:s3:::${HtmlStorageBucket}/*'
 
   # 2. DynamoDB Database Table
-  IACJobStatusTable:
+  SODJobStatusTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: IAC_JobStatusTable
+      TableName: SOD_JobStatusTable
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: image_id
+        - AttributeName: imageId
           AttributeType: S
       KeySchema:
-        - AttributeName: image_id
+        - AttributeName: imageId
           KeyType: HASH
 
   # 3. HTTP API Gateway with CORS updated to allow ALL headers
-  IACGatewayApi:
+  SODGatewayApi:
     Type: AWS::Serverless::HttpApi
     Properties:
-      Name: IAC_GatewayApi
+      Name: SOD_GatewayApi
       CorsConfiguration:
         AllowOrigins:
           - '*' 
@@ -69,75 +78,134 @@ Resources:
           - '*' 
 
   # 4. SQS Queue
-  IACQueue:
+  SODQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: IAC_Queue
-      VisibilityTimeout: 180 
+      QueueName: SOD_Queue
+      VisibilityTimeout: 240
 
-  # 5. Python Lambda Function (IAC_getImageUrl)
+  # 5. Python Lambda Function (SOD_getImageUrl)
   GetImageUrlFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: IAC_getImageUrl
-      Runtime: python3.12
+      FunctionName: SOD_getImageUrl
+      Runtime: python3.14
       CodeUri: ./backend-lambda/        
       Handler: get_image_url.lambda_handler 
       Environment:
         Variables:
-          QUEUE_URL: !Ref IACQueue
-          TABLE_NAME: !Ref IACJobStatusTable
+          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
+          QUEUE_URL: !Ref SODQueue
+          DATABASE_NAME: !Ref SODJobStatusTable
       Policies:
         - SQSSendMessagePolicy:
-            QueueName: !GetAtt IACQueue.QueueName
+            QueueName: !GetAtt SODQueue.QueueName
         - DynamoDBCrudPolicy:
-            TableName: !Ref IACJobStatusTable
+            TableName: !Ref SODJobStatusTable
       Events:
         PostRoute:
           Type: HttpApi
           Properties:
-            ApiId: !Ref IACGatewayApi
+            ApiId: !Ref SODGatewayApi
             Path: /
             Method: post
+
+  # NEW 5.5. Python Lambda Function (SOD_checkJobStatus)
+  SODCheckJobStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SOD_checkJobStatus
+      Runtime: python3.14
+      CodeUri: ./backend-lambda/
+      Handler: check_image_status.lambda_handler
+      Environment:
+        Variables:
+          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
+          QUEUE_URL: !Ref SODQueue
+          DATABASE_NAME: !Ref SODJobStatusTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SODJobStatusTable
+      Events:
         GetRoute:
           Type: HttpApi
           Properties:
-            ApiId: !Ref IACGatewayApi
+            ApiId: !Ref SODGatewayApi
             Path: /{imageId}
             Method: get
 
-  # 6. Container Lambda Function (IAC_processImage)
+  # 6. Container Lambda Function (SOD_processImage)
   ProcessImageFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: IAC_processImage
+      FunctionName: SOD_processImage
       PackageType: Image
-      Timeout: 180
-      MemorySize: 2048                  
+      Timeout: 240
+      MemorySize: 3008 
       Environment:
         Variables:
-          TABLE_NAME: !Ref IACJobStatusTable
+          DATABASE_NAME: !Ref SODJobStatusTable
+          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref IACJobStatusTable
+            TableName: !Ref SODJobStatusTable
+        
+        # ✅ FIXED: Explicit Inline Identity-Based IAM Policy to grant absolute PutObject access
+        - Statement:
+            - Sid: AllowLambdaToWriteToS3
+              Effect: Allow
+              Action:
+                - "s3:PutObject"
+                - "s3:PutObjectAcl" # Helpful if your python script applies custom ACL parameters on upload
+              Resource: 
+                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket/*"
+                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket"
+                
       Events:
         QueueTrigger:
           Type: SQS
           Properties:
-            Queue: !GetAtt IACQueue.Arn
+            Queue: !GetAtt SODQueue.Arn
             BatchSize: 10
     Metadata:
       Dockerfile: Dockerfile            
       DockerContext: ./backend-container 
       DockerTag: latest
       DockerBuildArgs:
-        # Replicates "--provenance false" by blocking multi-architecture manifest metadata
         BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+
+  # # 6. Container Lambda Function (SOD_processImage)
+  # ProcessImageFunction:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     FunctionName: SOD_processImage
+  #     PackageType: Image
+  #     Timeout: 240
+  #     MemorySize: 3008               
+  #     Environment:
+  #       Variables:
+  #         DATABASE_NAME: !Ref SODJobStatusTable
+  #         TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
+  #     Policies:
+  #       - DynamoDBCrudPolicy:
+  #           TableName: !Ref SODJobStatusTable
+  #     Events:
+  #       QueueTrigger:
+  #         Type: SQS
+  #         Properties:
+  #           Queue: !GetAtt SODQueue.Arn
+  #           BatchSize: 10
+  #   Metadata:
+  #     Dockerfile: Dockerfile            
+  #     DockerContext: ./backend-container 
+  #     DockerTag: latest
+  #     DockerBuildArgs:
+  #       BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
 
 Outputs:
   HttpApiUrl:
-    Description: "Base URL of the OmniDetection HTTP API Gateway"
-    Value: !Sub "https://${IACGatewayApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: "Base URL of the detector HTTP API Gateway"
+    Value: !Sub "https://${SODGatewayApi}.execute-api.${AWS::Region}.amazonaws.com"
   S3BucketName:
     Description: "Name of the HTML S3 Bucket"
     Value: !Ref HtmlStorageBucket
