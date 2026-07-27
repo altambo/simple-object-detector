@@ -19,9 +19,9 @@ SQS_CLIENT = boto3.client('sqs', config=config)
 dynamodb = boto3.resource('dynamodb', config=config)
 
 # Fetch resource names from environment variables set in your infrastructure template
-UPLOAD_BUCKET = os.environ.get('UPLOAD_BUCKET')
-SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
-DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DYNAMODB_TABLE') )
+UPLOAD_BUCKET = os.environ.get('TARGET_BUCKET')
+SQS_QUEUE_URL = os.environ.get('QUEUE_URL')
+DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 
 
 # get today's date in YYYY, mm, dd
