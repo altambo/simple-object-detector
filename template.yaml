@@ -102,6 +102,15 @@ Resources:
             QueueName: !GetAtt SODQueue.QueueName
         - DynamoDBCrudPolicy:
             TableName: !Ref SODJobStatusTable
+        - Statement:
+            - Sid: AllowIngestionToWriteToS3
+              Effect: Allow
+              Action:
+                - "s3:PutObject"
+                - "s3:PutObjectAcl"
+              Resource: 
+                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket/*"
+                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket"
       Events:
         PostRoute:
           Type: HttpApi
@@ -149,12 +158,11 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SODJobStatusTable
-        
-        # ✅ FIXED: Explicit Inline Identity-Based IAM Policy to grant absolute PutObject access
         - Statement:
             - Sid: AllowLambdaToWriteToS3
               Effect: Allow
               Action:
+                - "s3:GetObject"
                 - "s3:PutObject"
                 - "s3:PutObjectAcl" # Helpful if your python script applies custom ACL parameters on upload
               Resource: 
