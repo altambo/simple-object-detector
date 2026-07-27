@@ -72,26 +72,6 @@ async function processImage(event) {
     let city = "Unknown";
     let state = "Unknown";
     let country = "Unknown";
-    try {
-        // Fetch securely over HTTPS to avoid browser Mixed Content blocks
-        const geoResponse = await fetch('https://ipapi.co');
-        
-        if (!geoResponse.ok) {
-            throw new Error(`HTTP error! status: ${geoResponse.status}`);
-        }
-        
-        const geoData = await geoResponse.json();
-        
-        // Map the fields accurately from the ipapi.co JSON schema
-        city = geoData.city || "Unknown";
-        state = geoData.region || "Unknown";       // ipapi.co uses 'region', not 'regionName'
-        country = geoData.country_name || "Unknown"; // ipapi.co uses 'country_name', not 'country'
-        
-    } catch (err) {
-        console.error("Geolocation failed:", err);
-        // Fallback gracefully so the whole image upload doesn't crash
-        statusText.innerText = `Location unavailable.`;
-    }
 
     let payload = {};
     let image_id = "unknown ID";
