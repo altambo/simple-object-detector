@@ -19,9 +19,10 @@ SQS_CLIENT = boto3.client('sqs', config=config)
 dynamodb = boto3.resource('dynamodb', config=config)
 
 # Fetch resource names from environment variables set in your infrastructure template
-UPLOAD_BUCKET = os.environ.get('UPLOAD_BUCKET')
-SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
-DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DYNAMODB_TABLE') )
+UPLOAD_BUCKET = os.environ.get('TARGET_BUCKET')
+SQS_QUEUE_URL = os.environ.get('QUEUE_URL')
+DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
+
 
 # get today's date in YYYY, mm, dd
 today = datetime.date.today()
@@ -101,7 +102,7 @@ def lambda_handler(event, context):
             sqs_payload = {
                 'imageId': image_id,
                 'inputType': input_type,
-                'objectKey': object_db_link
+                'objectKey': object_key
             }
             object_db_link = object_key
             return_dict = {"imageId": image_id, "processedImage": base64_string}
@@ -136,4 +137,3 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'body': json.dumps({'error': 'Internal server pipeline error'})
         }
-
