@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call: # reused by deploy.yml so nothing is deployed without passing CI
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-lfs
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14" # matches the Lambda runtime
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            backend-container/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -v
+
+  validate-template:
+    name: Validate SAM template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+
+      - name: Validate and lint template.yaml
+        run: sam validate --lint
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+
+  container-test:
+    name: Container test
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-lfs
+
+      - name: Build and test the processing container
+        run: ./scripts/test_container.sh sod-process-image:ci

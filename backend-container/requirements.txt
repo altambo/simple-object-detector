@@ -1,0 +1,4 @@
+# Runtime dependencies for the SOD_processImage container (Python 3.14, x86_64).
+onnxruntime==1.31.1
+numpy==2.5.4
+pillow==13.0.0

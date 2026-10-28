@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  One-time setup: IAM role that GitHub Actions (.github/workflows/deploy.yml) assumes
+  through OIDC to deploy SimpleObjectDetector stacks. No long-lived access keys.
+  Deploy with the command in docs/ci-cd.md.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: altambo/simple-object-detector
+    Description: "owner/repo allowed to assume the role"
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: "Set to false if this AWS account already has the token.actions.githubusercontent.com OIDC provider"
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: "ARN of the existing GitHub OIDC provider (only when CreateOidcProvider is false)"
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SimpleObjectDetector-GitHubDeploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateProvider, !Ref GitHubOidcProvider, !Ref ExistingOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # Only jobs running in this repo's "dev" or "prod" GitHub environments
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubRepo}:environment:dev"
+                  - !Sub "repo:${GitHubRepo}:environment:prod"
+      # SAM deploys touch CloudFormation, Lambda, ECR, S3, SQS, DynamoDB and API Gateway
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        # PowerUserAccess excludes IAM; allow managing only the stack's own function roles
+        - PolicyName: ManageSimpleObjectDetectorRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/SimpleObjectDetector-*"
+
+Outputs:
+  RoleArn:
+    Description: "Set this as the AWS_DEPLOY_ROLE_ARN variable in the GitHub repo"
+    Value: !GetAtt GitHubDeployRole.Arn

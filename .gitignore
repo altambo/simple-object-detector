@@ -66,3 +66,13 @@ frontend/config.js
 .idea/
 .DS_Store
 Thumbs.db
+
+# ==========================================
+# Local test fixtures & scratch files
+# ==========================================
+event.json
+locals.json
+test_location/
+
+# CI: Git LFS cache key file
+.lfs-assets-id

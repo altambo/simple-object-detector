@@ -16,12 +16,14 @@ Parameters:
   LowerAppName:
     Type: String
     Description: "Lowercased application name enforced by deploy.sh"
+    AllowedPattern: "^[a-z0-9-]+$"
   EnvironmentName:
     Type: String
     Description: "Targeted deployment stage environment (dev/prod)"
+    AllowedPattern: "^[a-z0-9-]+$"
 
 Resources:
-  # 1. S3 Bucket configured for Static Website Hosting
+  # 1. S3 Bucket configured for Static Website Hosting (public, frontend assets only)
   HtmlStorageBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -49,11 +51,29 @@ Resources:
             Action: 's3:GetObject'
             Resource: !Sub 'arn:aws:s3:::${HtmlStorageBucket}/*'
 
+  # 1.5. Private S3 Bucket for user uploads and annotated results.
+  # Results are shared with the browser through short-lived presigned URLs only.
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${LowerAppName}-${EnvironmentName}-uploads-bucket"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireUserImages
+            Status: Enabled
+            Prefix: data/
+            ExpirationInDays: 7
+
   # 2. DynamoDB Database Table
   SODJobStatusTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: SOD_JobStatusTable
+      TableName: !Sub "SOD_JobStatusTable-${EnvironmentName}"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: imageId
@@ -62,39 +82,60 @@ Resources:
         - AttributeName: imageId
           KeyType: HASH
 
-  # 3. HTTP API Gateway with CORS updated to allow ALL headers
+  # 3. HTTP API Gateway with CORS and throttling to cap processing costs
   SODGatewayApi:
     Type: AWS::Serverless::HttpApi
     Properties:
-      Name: SOD_GatewayApi
+      Name: !Sub "SOD_GatewayApi-${EnvironmentName}"
+      # Strict default protects the expensive POST (each upload runs the 3 GB processor)
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+      # Status checks are cheap DynamoDB reads; the page polls every 2 s per open job
+      RouteSettings:
+        "GET /{imageId}":
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
       CorsConfiguration:
         AllowOrigins:
-          - '*' 
+          - '*'
         AllowMethods:
           - GET
           - POST
           - OPTIONS
         AllowHeaders:
-          - '*' 
+          - '*'
 
   # 4. SQS Queue
   SODQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: SOD_Queue
-      VisibilityTimeout: 240
+      QueueName: !Sub "SOD_Queue-${EnvironmentName}"
+      # AWS recommends at least 6x the consumer function's timeout (60s)
+      VisibilityTimeout: 360
+      # Messages that crash or time out the processor 3 times are parked instead of retried forever
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SODDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # 4.5. Dead-letter queue for messages the processor could not handle
+  SODDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "SOD_DeadLetterQueue-${EnvironmentName}"
+      MessageRetentionPeriod: 1209600 # 14 days, the maximum
 
   # 5. Python Lambda Function (SOD_getImageUrl)
   GetImageUrlFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: SOD_getImageUrl
+      FunctionName: !Sub "SOD_getImageUrl-${EnvironmentName}"
       Runtime: python3.14
-      CodeUri: ./backend-lambda/        
-      Handler: get_image_url.lambda_handler 
+      CodeUri: ./backend-lambda/
+      Handler: get_image_url.lambda_handler
       Environment:
         Variables:
-          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
+          TARGET_BUCKET: !Ref UploadsBucket
           QUEUE_URL: !Ref SODQueue
           DATABASE_NAME: !Ref SODJobStatusTable
       Policies:
@@ -107,10 +148,8 @@ Resources:
               Effect: Allow
               Action:
                 - "s3:PutObject"
-                - "s3:PutObjectAcl"
-              Resource: 
-                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket/*"
-                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket"
+              Resource:
+                - !Sub "${UploadsBucket.Arn}/*"
       Events:
         PostRoute:
           Type: HttpApi
@@ -119,21 +158,19 @@ Resources:
             Path: /
             Method: post
 
-  # NEW 5.5. Python Lambda Function (SOD_checkJobStatus)
+  # 5.5. Python Lambda Function (SOD_checkJobStatus)
   SODCheckJobStatus:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: SOD_checkJobStatus
+      FunctionName: !Sub "SOD_checkJobStatus-${EnvironmentName}"
       Runtime: python3.14
       CodeUri: ./backend-lambda/
       Handler: check_image_status.lambda_handler
       Environment:
         Variables:
-          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
-          QUEUE_URL: !Ref SODQueue
           DATABASE_NAME: !Ref SODJobStatusTable
       Policies:
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref SODJobStatusTable
       Events:
         GetRoute:
@@ -147,68 +184,41 @@ Resources:
   ProcessImageFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: SOD_processImage
+      FunctionName: !Sub "SOD_processImage-${EnvironmentName}"
       PackageType: Image
-      Timeout: 240
-      MemorySize: 3008 
+      # One image per invocation: URL download (max 10s) + inference + S3 upload
+      Timeout: 60
+      # Lambda CPU scales with memory; measure before lowering
+      MemorySize: 3008
       Environment:
         Variables:
           DATABASE_NAME: !Ref SODJobStatusTable
-          TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
+          TARGET_BUCKET: !Ref UploadsBucket
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SODJobStatusTable
         - Statement:
-            - Sid: AllowLambdaToWriteToS3
+            - Sid: AllowLambdaToReadWriteS3
               Effect: Allow
               Action:
                 - "s3:GetObject"
                 - "s3:PutObject"
-                - "s3:PutObjectAcl" # Helpful if your python script applies custom ACL parameters on upload
-              Resource: 
-                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket/*"
-                - !Sub "arn:aws:s3:::${LowerAppName}-${EnvironmentName}-frontend-bucket"
-                
+              Resource:
+                - !Sub "${UploadsBucket.Arn}/*"
       Events:
         QueueTrigger:
           Type: SQS
           Properties:
             Queue: !GetAtt SODQueue.Arn
-            BatchSize: 10
+            # One message per invocation, so uploads are processed in parallel
+            # and one slow image never delays others in the same batch
+            BatchSize: 1
     Metadata:
-      Dockerfile: Dockerfile            
-      DockerContext: ./backend-container 
+      Dockerfile: Dockerfile
+      DockerContext: ./backend-container
       DockerTag: latest
       DockerBuildArgs:
         BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
-
-  # # 6. Container Lambda Function (SOD_processImage)
-  # ProcessImageFunction:
-  #   Type: AWS::Serverless::Function
-  #   Properties:
-  #     FunctionName: SOD_processImage
-  #     PackageType: Image
-  #     Timeout: 240
-  #     MemorySize: 3008               
-  #     Environment:
-  #       Variables:
-  #         DATABASE_NAME: !Ref SODJobStatusTable
-  #         TARGET_BUCKET: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
-  #     Policies:
-  #       - DynamoDBCrudPolicy:
-  #           TableName: !Ref SODJobStatusTable
-  #     Events:
-  #       QueueTrigger:
-  #         Type: SQS
-  #         Properties:
-  #           Queue: !GetAtt SODQueue.Arn
-  #           BatchSize: 10
-  #   Metadata:
-  #     Dockerfile: Dockerfile            
-  #     DockerContext: ./backend-container 
-  #     DockerTag: latest
-  #     DockerBuildArgs:
-  #       BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
 
 Outputs:
   HttpApiUrl:
@@ -217,6 +227,9 @@ Outputs:
   S3BucketName:
     Description: "Name of the HTML S3 Bucket"
     Value: !Ref HtmlStorageBucket
+  UploadsBucketName:
+    Description: "Name of the private uploads/results S3 Bucket"
+    Value: !Ref UploadsBucket
   WebsiteURL:
     Description: "URL for the hosted frontend website"
     Value: !GetAtt HtmlStorageBucket.WebsiteURL

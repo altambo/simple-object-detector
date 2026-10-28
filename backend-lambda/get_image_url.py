@@ -24,12 +24,6 @@ SQS_QUEUE_URL = os.environ.get('QUEUE_URL')
 DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 
 
-# get today's date in YYYY, mm, dd
-today = datetime.date.today()
-yyyy = today.strftime("%Y")
-mm = today.strftime("%m")
-dd = today.strftime("%d")
-
 def lambda_handler(event, context):
     """
     Upload the image (local or url) to S3 bucket and return an imageId and URL
@@ -60,13 +54,15 @@ def lambda_handler(event, context):
 
     # Generate transaction variables
     image_id = str(uuid.uuid4())
-    # now = datetime.utcnow() # Fixed undefined date variables by generating from utcnow
     now = datetime.datetime.now()
 
     try:
         # --- PATHWAY A: Remote Image Web URL ---
         if image_type == 'url':
-            object_db_link = body.get('image')
+            object_db_link = str(body.get('image') or '')
+            # Full SSRF checks happen in the processing container; reject obvious junk early
+            if not object_db_link.lower().startswith(('http://', 'https://')):
+                return {'statusCode': 400, 'body': json.dumps({'error': 'Image URL must start with http:// or https://'})}
             input_type = 'URL'
             # Queue payload
             sqs_payload = {
@@ -79,7 +75,7 @@ def lambda_handler(event, context):
         # --- PATHWAY B: Local Base64 File Data ---
         else:
             # Generate dynamic S3 folder path from the actual execution timestamp
-            object_key = f"data/{yyyy}/{mm}/{image_id}.jpg"
+            object_key = f"data/{now:%Y}/{now:%m}/{image_id}.jpg"
             base64_image_data = body.get('image')
             input_type = 'LOCAL'
 
@@ -105,7 +101,7 @@ def lambda_handler(event, context):
                 'objectKey': object_key
             }
             object_db_link = object_key
-            return_dict = {"imageId": image_id, "processedImage": base64_string}
+            return_dict = {"imageId": image_id}
         
         # === Common Downstream Operations ====
         # Write to dynamo table
