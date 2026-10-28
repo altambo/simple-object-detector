@@ -3,7 +3,10 @@ import logging
 import os
 import boto3
 import json
-import urllib
+import socket
+import ipaddress
+import urllib.parse
+import urllib.request
 import datetime
 
 from ultralytics import YOLO
@@ -28,11 +31,49 @@ DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 # Environment variables
 MODEL = YOLO(model="yolov8m.onnx", task='detect')
 
-# get today's date in YYYY, mm, dd
-today = datetime.date.today()
-yyyy = today.strftime("%Y")
-mm = today.strftime("%m")
-dd = today.strftime("%d")
+# Limits for downloading user-supplied image URLs
+MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 10
+
+
+def check_public_url(url):
+    """
+    Raise ValueError unless 'url' is http(s) and resolves only to public IP addresses.
+    Blocks file://, localhost, private networks and the instance metadata endpoint (SSRF).
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Only http(s) image URLs are allowed.")
+    default_port = 443 if parsed.scheme == "https" else 80
+    try:
+        addr_info = socket.getaddrinfo(parsed.hostname, parsed.port or default_port)
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve host {parsed.hostname}.")
+    for info in addr_info:
+        if not ipaddress.ip_address(info[4][0]).is_global:
+            raise ValueError("Image URL must point to a public address.")
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target so a public URL cannot bounce to an internal one."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check_public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+URL_OPENER = urllib.request.build_opener(SafeRedirectHandler)
+
+
+def download_public_image(url, local_path):
+    """Download a user-supplied image URL after SSRF and size checks."""
+    check_public_url(url)
+    req = urllib.request.Request(url, headers={'User-Agent': 'AWS-Lambda-YOLO'})
+    with URL_OPENER.open(req, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        data = response.read(MAX_DOWNLOAD_BYTES + 1)
+    if len(data) > MAX_DOWNLOAD_BYTES:
+        raise ValueError(f"Image is larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB.")
+    with open(local_path, 'wb') as out_file:
+        out_file.write(data)
 
 
 def update_job_status(image_id, status, progress_message, out_url=None):
@@ -81,10 +122,8 @@ def lambda_handler(event, context):
                 local_input_path = f"/tmp/{image_id}.jpg"
                 
                 LOGGER.info(f"Downloading remote image URL for ID: {image_id}")
-                # Download the image from the internet directly into Lambda memory
-                req = urllib.request.Request(source_url, headers={'User-Agent': 'AWS-Lambda-YOLO'})
-                with urllib.request.urlopen(req) as response, open(local_input_path, 'wb') as out_file:
-                    out_file.write(response.read())
+                # Download the image from the internet (public addresses only)
+                download_public_image(source_url, local_input_path)
                 LOGGER.info(f"... Download completed to {local_input_path}")
 
             # ---- PATHWAY 2: It is an auto-triggered S3 Event from a Local File upload ----
@@ -101,7 +140,6 @@ def lambda_handler(event, context):
             else:
                 return {
                     "statusCode": 400,
-                    # "headers": CORS_HEADERS,
                     "body": json.dumps({"error": "Invalid engine type argument specified."})
                 }
 
@@ -120,7 +158,9 @@ def lambda_handler(event, context):
                 LOGGER.info(f"Local output dir is {r.save_dir}")
                 local_output_file = os.path.join(r.save_dir, f"{image_id}.jpg")
 
-            output_key = f"data/{yyyy}/{mm}/processed_{image_id}.jpg"
+            # Computed per request so warm containers don't reuse a stale date
+            today = datetime.date.today()
+            output_key = f"data/{today:%Y}/{today:%m}/processed_{image_id}.jpg"
             
             # 6. Upload the annotated image back to S3
             LOGGER.info(f"Uploading annotated image to s3 bucket.")
@@ -141,7 +181,6 @@ def lambda_handler(event, context):
                 },
                 ExpiresIn=15*60
             )
-            # output_url = f"https://{UPLOAD_BUCKET}/{output_key}"
             update_job_status(image_id, "COMPLETE", "Result uploaded to s3.", out_url=output_url)
             
             LOGGER.info("Clean up ...")

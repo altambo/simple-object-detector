@@ -33,39 +33,6 @@ sam validate
 echo "👉 Building serverless architecture..."
 sam build --use-container
 
-# --- PRE-DEPLOYMENT S3 CLEANUP SANITIZATION ---
-# Calculate the exact bucket name CloudFormation will attempt to build
-EXPECTED_BUCKET_NAME="${LOW_APP_NAME}-${ENVIRONMENT}-frontend-bucket"
-
-
-# echo "👉 Checking if S3 bucket '${EXPECTED_BUCKET_NAME}' already exists..."
-# # Query AWS to see if the bucket exists and if you have access to it
-# if aws s3api head-bucket --bucket "${EXPECTED_BUCKET_NAME}" 2>/dev/null; then
-#     echo "⚠️ Conflict Warning: S3 bucket '${EXPECTED_BUCKET_NAME}' already exists."
-#     echo "🗑️ Purging all contents and deleting the bucket to ensure a clean state..."
-    
-#     # 1. Force-remove all object versions, files, folders, and markers inside the bucket
-#     aws s3 rm "s3://${EXPECTED_BUCKET_NAME}" --recursive
-    
-#     # If your bucket has versioning turned on, we also clean up hidden object versions to prevent deletion blocks
-#     echo "   Clearing out object versions and deletion markers..."
-#     aws s3api delete-objects --bucket "${EXPECTED_BUCKET_NAME}" \
-#         --delete "$(aws s3api list-object-versions --bucket "${EXPECTED_BUCKET_NAME}" \
-#         --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null || echo '{"Objects":[]}')" 2>/dev/null || true
-        
-#     aws s3api delete-objects --bucket "${EXPECTED_BUCKET_NAME}" \
-#         --delete "$(aws s3api list-object-versions --bucket "${EXPECTED_BUCKET_NAME}" \
-#         --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null || echo '{"Objects":[]}')" 2>/dev/null || true
-
-#     # 2. Delete the now-empty bucket structure from the AWS account
-#     echo "   Removing root bucket architecture..."
-#     aws s3api delete-bucket --bucket "${EXPECTED_BUCKET_NAME}" --region "${REGION}"
-#     echo "✅ Existing S3 bucket successfully destroyed. Proceeding to deployment."
-# else
-#     echo "   No conflicting S3 bucket found. Safe to proceed."
-# fi
-
-
 # 3. Deploy Infrastructure to AWS
 echo "👉 Checking existing stack status..."
 
@@ -150,10 +117,6 @@ window.ENV_CONFIG = {
 EOF
 
 # 6. Upload only specific frontend assets to the target S3 bucket
-echo "👉 Initializing bucket directory structure..."
-sleep 10
-aws s3api put-object --bucket "${BUCKET_NAME}" --key "data/"
-
 echo "👉 Uploading selected frontend assets to S3 bucket ($BUCKET_NAME)..."
 FILES_TO_UPLOAD=("index.html" "main.js" "config.js")
 
