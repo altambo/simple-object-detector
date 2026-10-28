@@ -2,3 +2,5 @@
 # the Lambda Python runtime (boto3) and the container image (backend-container/Dockerfile).
 boto3
 python-dotenv
+# Run detector.py locally
+-r backend-container/requirements.txt

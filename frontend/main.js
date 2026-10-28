@@ -184,7 +184,7 @@ async function processImage(event) {
             // 2. Set the image source to kick off the background network fetch
             resultImage.src = `${poll_data.s3OutputUrl}`;
             updateStatus(
-                `Processing succeeded. Output image is displayed below.`, 
+                `Processing succeeded. ${poll_data.message || ""} Output image is displayed below.`,
                 'COMPLETE'
             );
         } else {

@@ -23,7 +23,7 @@ Browser ──POST /──▶ API Gateway ──▶ GetImageUrlFunction ──�
 - **HTTP API Gateway (`SODGatewayApi`)**: routes requests, with CORS and request throttling.
 - **`GetImageUrlFunction`** (`backend-lambda/get_image_url.py`): accepts a request, stores uploaded images in S3, records the job in DynamoDB and enqueues it on SQS.
 - **SQS queue (`SODQueue`)**: decouples ingestion from processing.
-- **`ProcessImageFunction`** (`backend-container/`): x86_64 container Lambda running `yolov8m.onnx` with Ultralytics. It downloads the image, runs detection, uploads the annotated result and writes a 15-minute presigned URL to DynamoDB.
+- **`ProcessImageFunction`** (`backend-container/`): x86_64 container Lambda running `yolov8m.onnx` directly with ONNX Runtime, numpy and Pillow (`detector.py`); there is no PyTorch or Ultralytics in the image, which keeps it small and cold starts short. It downloads the image, runs detection, uploads the annotated result and writes a detection summary and a 15-minute presigned URL to DynamoDB.
 - **`SODCheckJobStatus`** (`backend-lambda/check_image_status.py`): returns a job's status from DynamoDB.
 - **DynamoDB table (`SODJobStatusTable`)**: job status records.
 - **S3 buckets**: a public bucket hosts the static website; a separate private bucket holds uploads and results (expired after 7 days).
@@ -75,4 +75,4 @@ pip install -r requirements-dev.txt
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 (see [LICENSE](LICENSE)), matching the license of [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics), which it uses.
+This project is licensed under the GNU Affero General Public License v3.0 (see [LICENSE](LICENSE)), matching the license of the [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) model weights it uses.

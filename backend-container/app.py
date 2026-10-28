@@ -9,7 +9,9 @@ import urllib.parse
 import urllib.request
 import datetime
 
-from ultralytics import YOLO
+from PIL import UnidentifiedImageError
+
+from detector import YoloOnnxDetector, load_image, annotate, summarize
 
 # Only load a .env file if running locally (AWS sets AWS_LAMBDA_FUNCTION_NAME automatically)
 if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
@@ -29,7 +31,7 @@ dynamodb = boto3.resource('dynamodb')
 DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 
 # Environment variables
-MODEL = YOLO(model="yolov8m.onnx", task='detect')
+MODEL = YoloOnnxDetector("yolov8m.onnx", conf_threshold=0.25)
 
 # Limits for downloading user-supplied image URLs
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
@@ -107,14 +109,13 @@ def update_job_status(image_id, status, progress_message, out_url=None):
 
 
 def lambda_handler(event, context):
-    global MODEL
-    
     print(f'Incoming event is: {event}')
     for record in event["Records"]:
+        local_input_path = ""
+        local_output_file = ""
         try:
             body = json.loads(record['body'])
-            local_input_path = ""
-            
+
             # ---- PATHWAY 1: It is a custom SQS message from a Web URL ----
             if 'inputType' in body and body['inputType'] == 'URL':
                 image_id = body['imageId']
@@ -145,18 +146,12 @@ def lambda_handler(event, context):
 
             # 6. Process image and save output image showing detection regions
             LOGGER.info(f"Processing image")
-            results = MODEL(
-                source = local_input_path,
-                save = True,
-                project="/tmp", 
-                name="yolo_out", 
-                exist_ok=True,
-                conf=0.25
-            )
-            # get output path
-            for r in results:
-                LOGGER.info(f"Local output dir is {r.save_dir}")
-                local_output_file = os.path.join(r.save_dir, f"{image_id}.jpg")
+            image = load_image(local_input_path)
+            detections = MODEL.detect(image)
+            summary = summarize(detections)
+            LOGGER.info(summary)
+            local_output_file = f"/tmp/processed_{image_id}.jpg"
+            annotate(image, detections).save(local_output_file, format="JPEG", quality=95)
 
             # Computed per request so warm containers don't reuse a stale date
             today = datetime.date.today()
@@ -181,14 +176,11 @@ def lambda_handler(event, context):
                 },
                 ExpiresIn=15*60
             )
-            update_job_status(image_id, "COMPLETE", "Result uploaded to s3.", out_url=output_url)
-            
-            LOGGER.info("Clean up ...")
-            # 7. Cleanup disk files to prevent storage exhaustion on warm containers
-            for path in [local_input_path, local_output_file]:
-                if os.path.exists(path):
-                    os.remove(path)
+            update_job_status(image_id, "COMPLETE", summary, out_url=output_url)
 
+        except UnidentifiedImageError:
+            LOGGER.error("Downloaded file is not a readable image.")
+            update_job_status(image_id, "FAILED", "The file is not a supported image format.")
         except (ValueError, FileNotFoundError) as e:
             LOGGER.error(f"Error encountered. Message is: {str(e)}")
             update_job_status(image_id, "FAILED", str(e))
@@ -198,7 +190,11 @@ def lambda_handler(event, context):
         except Exception as e:
             LOGGER.exception(f"Error in execution. Message: {str(e)}")
             update_job_status(image_id, "FAILED", str(e))
-            
+        finally:
+            # Cleanup disk files to prevent storage exhaustion on warm containers
+            for path in [local_input_path, local_output_file]:
+                if path and os.path.exists(path):
+                    os.remove(path)
 
     return {
         "statusCode": 200, 
