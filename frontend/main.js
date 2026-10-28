@@ -138,7 +138,7 @@ async function processImage(event) {
         // 3. Polling Logic (While loop based strictly on the GET response data)
         const startTime = Date.now();
         const maxWaitTime = 300000; // 5 minute timeout
-        const pollInterval = 10000; // Poll every 10 seconds
+        const pollInterval = 2000; // Poll every 2 seconds (warm jobs finish in ~1-2 s)
         let counter = 0;
 
         while (poll_status !== 'COMPLETE' && poll_status !== 'FAILED') {
@@ -156,11 +156,15 @@ async function processImage(event) {
                 'PROCESSING'
             );
             
-            // Wait 10 seconds before checking again
+            // Wait before checking again
             await delay(pollInterval);
 
             // Repeated GET request to refresh pollData
             const repeat_response = await fetch(statusUrl);
+            // Throttled or a temporary server error: keep the last status and try again
+            if (repeat_response.status === 429 || repeat_response.status >= 500) {
+                continue;
+            }
             if (!repeat_response.ok) {
                 updateStatus(`Processing failed. Network error.`, 'ERROR');
                 return;

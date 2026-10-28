@@ -87,9 +87,15 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       Name: !Sub "SOD_GatewayApi-${EnvironmentName}"
+      # Strict default protects the expensive POST (each upload runs the 3 GB processor)
       DefaultRouteSettings:
         ThrottlingBurstLimit: 10
         ThrottlingRateLimit: 5
+      # Status checks are cheap DynamoDB reads; the page polls every 2 s per open job
+      RouteSettings:
+        "GET /{imageId}":
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
       CorsConfiguration:
         AllowOrigins:
           - '*'
