@@ -1,6 +1,8 @@
-# Local development/testing only. Lambda runtime dependencies are provided by
+# Local development and CI only. Lambda runtime dependencies are provided by
 # the Lambda Python runtime (boto3) and the container image (backend-container/Dockerfile).
-boto3
-python-dotenv
+boto3==1.43.120
+python-dotenv==1.2.4
+pytest==9.2.0
+moto[s3,sqs,dynamodb]==5.2.5
 # Run detector.py locally
 -r backend-container/requirements.txt

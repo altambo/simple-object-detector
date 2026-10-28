@@ -31,7 +31,8 @@ dynamodb = boto3.resource('dynamodb')
 DYNAMODB_TABLE = dynamodb.Table( os.environ.get('DATABASE_NAME') )
 
 # Environment variables
-MODEL = YoloOnnxDetector("yolov8m.onnx", conf_threshold=0.25)
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yolov8m.onnx")
+MODEL = YoloOnnxDetector(MODEL_PATH, conf_threshold=0.25)
 
 # Limits for downloading user-supplied image URLs
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024

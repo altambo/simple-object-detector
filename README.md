@@ -58,13 +58,21 @@ The script:
 
 When it finishes, it prints the website URL and API endpoint. Open the index URL in a browser.
 
-## Local development
+## Local development and testing
 
-To run the Lambda handlers locally, copy `.env.example` to `.env`, fill in the names of deployed resources, and install the dev dependencies:
+Install the dev dependencies (Python 3.14 recommended, to match Lambda):
 
 ```bash
 pip install -r requirements-dev.txt
 ```
+
+- **Unit tests:** `python -m pytest`. AWS is mocked, so no account or credentials are needed.
+- **Container test:** `./scripts/test_container.sh` builds the processing image and tests it with the Lambda runtime emulator (needs Docker).
+- **Running handlers against real AWS resources:** copy `.env.example` to `.env` and fill in the names of deployed resources.
+
+## CI/CD
+
+GitHub Actions runs the unit tests, a SAM template lint and the container test on every pull request and push to `main`. Deploys run from **Actions → Deploy** and only proceed if CI passes. See [docs/ci-cd.md](docs/ci-cd.md) for one-time setup (AWS role via OIDC, GitHub environments).
 
 ## Security notes
 

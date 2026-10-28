@@ -73,3 +73,6 @@ Thumbs.db
 event.json
 locals.json
 test_location/
+
+# CI: Git LFS cache key file
+.lfs-assets-id

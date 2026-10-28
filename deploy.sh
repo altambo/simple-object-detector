@@ -56,10 +56,18 @@ if [ "${STACK_STATUS}" == "ROLLBACK_COMPLETE" ] || [ "${STACK_STATUS}" == "ROLLB
 fi
 
 echo "👉 Deploying infrastructure to AWS..."
+# ECR repository for the container image: use the one in a local samconfig.toml if set,
+# otherwise let SAM create and manage one (CI runners and fresh clones have no samconfig.toml)
+IMAGE_REPO_ARGS=()
+if ! grep -qs 'image_repositories' samconfig.toml; then
+    IMAGE_REPO_ARGS=(--resolve-image-repos)
+fi
+
 sam deploy \
     --stack-name "${STACK_NAME}" \
     --region "${REGION}" \
     --resolve-s3 \
+    "${IMAGE_REPO_ARGS[@]}" \
     --no-fail-on-empty-changeset \
     --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
     --parameter-overrides "LowerAppName=${LOW_APP_NAME} EnvironmentName=${ENVIRONMENT}"
