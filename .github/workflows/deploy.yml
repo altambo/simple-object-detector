@@ -1,0 +1,50 @@
+name: Deploy
+
+# Manual deploys: Actions tab -> Deploy -> Run workflow -> pick dev or prod.
+# Setup (one time): see docs/ci-cd.md.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false # never cancel a CloudFormation deploy half way
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }} # add required reviewers to "prod" in repo settings
+    permissions:
+      contents: read
+      id-token: write # lets GitHub's OIDC token assume the AWS role; no stored access keys
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-lfs
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy stack and frontend
+        run: ./deploy.sh "$ENVIRONMENT"
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
