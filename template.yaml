@@ -105,7 +105,19 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "SOD_Queue-${EnvironmentName}"
-      VisibilityTimeout: 240
+      # AWS recommends at least 6x the consumer function's timeout (60s)
+      VisibilityTimeout: 360
+      # Messages that crash or time out the processor 3 times are parked instead of retried forever
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SODDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # 4.5. Dead-letter queue for messages the processor could not handle
+  SODDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "SOD_DeadLetterQueue-${EnvironmentName}"
+      MessageRetentionPeriod: 1209600 # 14 days, the maximum
 
   # 5. Python Lambda Function (SOD_getImageUrl)
   GetImageUrlFunction:
@@ -168,7 +180,9 @@ Resources:
     Properties:
       FunctionName: !Sub "SOD_processImage-${EnvironmentName}"
       PackageType: Image
-      Timeout: 240
+      # One image per invocation: URL download (max 10s) + inference + S3 upload
+      Timeout: 60
+      # Lambda CPU scales with memory; measure before lowering
       MemorySize: 3008
       Environment:
         Variables:
@@ -190,7 +204,9 @@ Resources:
           Type: SQS
           Properties:
             Queue: !GetAtt SODQueue.Arn
-            BatchSize: 10
+            # One message per invocation, so uploads are processed in parallel
+            # and one slow image never delays others in the same batch
+            BatchSize: 1
     Metadata:
       Dockerfile: Dockerfile
       DockerContext: ./backend-container

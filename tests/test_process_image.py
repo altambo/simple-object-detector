@@ -116,6 +116,45 @@ def test_temp_files_are_removed_after_processing(app, aws, bus_image_path):
     assert not os.path.exists(f"/tmp/processed_{image_id}.jpg")
 
 
-def test_unknown_input_type_returns_400(app):
-    resp = app.lambda_handler(_sqs_event({"inputType": "BOGUS", "imageId": "x"}), None)
-    assert resp["statusCode"] == 400
+def test_unknown_input_type_marks_job_failed(app):
+    image_id = str(uuid.uuid4())
+    resp = app.lambda_handler(_sqs_event({"inputType": "BOGUS", "imageId": image_id}), None)
+
+    assert resp["statusCode"] == 200
+    job = get_job(image_id)
+    assert job["status"] == "FAILED"
+    assert "Unsupported input type" in job["message"]
+
+
+# --- batches (regression tests: one bad message must not affect the others) ------------
+
+def _upload_bus(aws, bus_image_path, image_id):
+    key = f"data/test/{image_id}.jpg"
+    boto3.client("s3").upload_file(str(bus_image_path), aws["bucket"], key)
+    return {"inputType": "LOCAL", "imageId": image_id, "objectKey": key}
+
+
+def test_bad_message_does_not_stop_rest_of_batch(app, aws, bus_image_path):
+    bad_id, good_id = str(uuid.uuid4()), str(uuid.uuid4())
+    event = _sqs_event({"inputType": "BOGUS", "imageId": bad_id}, _upload_bus(aws, bus_image_path, good_id))
+
+    app.lambda_handler(event, None)
+
+    assert get_job(bad_id)["status"] == "FAILED"
+    assert get_job(good_id)["status"] == "COMPLETE"
+
+
+def test_malformed_message_does_not_change_previous_job(app, aws, bus_image_path):
+    good_id = str(uuid.uuid4())
+    event = _sqs_event(_upload_bus(aws, bus_image_path, good_id))
+    event["Records"].append({"body": "this is not json"})
+
+    resp = app.lambda_handler(event, None)
+
+    assert resp["statusCode"] == 200
+    assert get_job(good_id)["status"] == "COMPLETE"
+
+
+def test_message_without_image_id_is_skipped(app):
+    resp = app.lambda_handler(_sqs_event({"inputType": "URL", "sourceUrl": "https://example.com/a.jpg"}), None)
+    assert resp["statusCode"] == 200

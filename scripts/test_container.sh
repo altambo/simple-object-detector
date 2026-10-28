@@ -69,16 +69,16 @@ docker run -d --name "$CONTAINER_NAME" --platform linux/amd64 "${ENV_ARGS[@]}" \
     -p "${RIE_PORT}:8080" "$IMAGE" >/dev/null
 
 INVOKE_URL="http://localhost:${RIE_PORT}/2015-03-31/functions/function/invocations"
-# An unknown inputType is rejected before any AWS call, so this exercises the
-# real Lambda entrypoint (cold start, model load, handler) without AWS access.
-EVENT='{"Records": [{"body": "{\"inputType\": \"CONTAINER_TEST\", \"imageId\": \"container-test\"}"}]}'
+# A message without an imageId is skipped before any AWS call, so this exercises
+# the real Lambda entrypoint (cold start, model load, handler) without AWS access.
+EVENT='{"Records": [{"body": "{\"inputType\": \"CONTAINER_TEST\"}"}]}'
 RESPONSE=""
 for _ in $(seq 1 60); do
     if RESPONSE=$(curl -sf -X POST "$INVOKE_URL" -d "$EVENT" 2>/dev/null); then break; fi
     sleep 1
 done
 echo "   Response: ${RESPONSE}"
-if [[ "$RESPONSE" != *'"statusCode": 400'* ]]; then
+if [[ "$RESPONSE" != *'"statusCode": 200'* ]]; then
     echo "❌ Unexpected response from the handler. Container logs:"
     docker logs "$CONTAINER_NAME" | tail -30
     exit 1

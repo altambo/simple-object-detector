@@ -83,6 +83,9 @@ def update_job_status(image_id, status, progress_message, out_url=None):
     """
     Update the status of 'image_id' in the database
     """
+    if not image_id:
+        LOGGER.warning(f"No image ID to update status for. Status was: {status} ({progress_message})")
+        return
     # Use expression aliases (#m and #s) separated by a comma
     update_expression = "SET #m = :msg_val, #s = :status_val"
     # map your placeholder aliases to the real reserved words
@@ -112,14 +115,19 @@ def update_job_status(image_id, status, progress_message, out_url=None):
 def lambda_handler(event, context):
     print(f'Incoming event is: {event}')
     for record in event["Records"]:
+        # Reset per record so an error never reports against the previous record's job
+        image_id = None
         local_input_path = ""
         local_output_file = ""
         try:
             body = json.loads(record['body'])
+            image_id = body.get('imageId')
+            input_type = body.get('inputType')
+            if not image_id:
+                raise ValueError("Message has no imageId.")
 
             # ---- PATHWAY 1: It is a custom SQS message from a Web URL ----
-            if 'inputType' in body and body['inputType'] == 'URL':
-                image_id = body['imageId']
+            if input_type == 'URL':
                 source_url = body['sourceUrl']
                 local_input_path = f"/tmp/{image_id}.jpg"
                 
@@ -129,10 +137,9 @@ def lambda_handler(event, context):
                 LOGGER.info(f"... Download completed to {local_input_path}")
 
             # ---- PATHWAY 2: It is an auto-triggered S3 Event from a Local File upload ----
-            elif 'inputType' in body and body['inputType'] == 'LOCAL':
+            elif input_type == 'LOCAL':
                 # extract info from body and make local download path
                 object_key = body['objectKey']
-                image_id = body['imageId']
                 local_input_path = f"/tmp/{image_id}.jpg"
                 
                 LOGGER.info(f"Downloading S3 object with ID: {image_id} to {local_input_path} ...")
@@ -140,10 +147,11 @@ def lambda_handler(event, context):
                 LOGGER.info(f"... Download completed to {local_input_path}")
             
             else:
-                return {
-                    "statusCode": 400,
-                    "body": json.dumps({"error": "Invalid engine type argument specified."})
-                }
+                # Skip just this record; returning here would drop the rest of the batch,
+                # since SQS deletes every message once the invocation succeeds
+                LOGGER.error(f"Skipping message with unsupported inputType: {input_type!r}")
+                update_job_status(image_id, "FAILED", f"Unsupported input type: {input_type}")
+                continue
 
             # 6. Process image and save output image showing detection regions
             LOGGER.info(f"Processing image")
