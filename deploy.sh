@@ -31,7 +31,15 @@ sam validate
 
 # 2. Build the Application Architecture
 echo "👉 Building serverless architecture..."
-sam build --use-container
+# SAM only finds Docker at /var/run/docker.sock or $DOCKER_HOST. Docker Desktop on macOS
+# may only expose its socket elsewhere, so fall back to the active docker context.
+if [ -z "${DOCKER_HOST:-}" ] && [ ! -S /var/run/docker.sock ]; then
+    DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
+    export DOCKER_HOST
+fi
+# --use-buildkit: the legacy builder fails with "failed to export image ... not found" when
+# Docker Desktop's containerd image store builds the x86_64 image on Apple Silicon
+sam build --use-container --use-buildkit
 
 # 3. Deploy Infrastructure to AWS
 echo "👉 Checking existing stack status..."
