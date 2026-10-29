@@ -21,23 +21,25 @@ Parameters:
     Type: String
     Description: "Targeted deployment stage environment (dev/prod)"
     AllowedPattern: "^[a-z0-9-]+$"
+  LogRetentionInDays:
+    Type: Number
+    Description: "Days to keep Lambda logs"
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
 
 Resources:
-  # 1. S3 Bucket configured for Static Website Hosting (public, frontend assets only)
+  # 1. Private S3 Bucket holding the frontend (served to visitors only through CloudFront)
   HtmlStorageBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "${LowerAppName}-${EnvironmentName}-frontend-bucket"
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
-  # S3 Bucket Policy to allow public GET requests for website visitors
+  # Only this stack's CloudFront distribution may read the frontend files
   HtmlBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -45,11 +47,48 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: PublicReadForGetBucketObjects
+          - Sid: AllowCloudFrontReadOnly
             Effect: Allow
-            Principal: '*'
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: 's3:GetObject'
             Resource: !Sub 'arn:aws:s3:::${HtmlStorageBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
+
+  # 1.2. CloudFront: HTTPS website address in front of the private frontend bucket
+  WebsiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${LowerAppName}-${EnvironmentName}-frontend-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "Simple Object Detector frontend (${EnvironmentName})"
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100 # North America and Europe edge locations (cheapest)
+        Origins:
+          - Id: FrontendBucket
+            DomainName: !GetAtt HtmlStorageBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebsiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: "" # must be empty when using Origin Access Control
+        DefaultCacheBehavior:
+          TargetOriginId: FrontendBucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed "CachingOptimized" policy; deploy.sh invalidates the cache after uploads
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
 
   # 1.5. Private S3 Bucket for user uploads and annotated results.
   # Results are shared with the browser through short-lived presigned URLs only.
@@ -125,6 +164,27 @@ Resources:
       QueueName: !Sub "SOD_DeadLetterQueue-${EnvironmentName}"
       MessageRetentionPeriod: 1209600 # 14 days, the maximum
 
+  # 4.8. Log groups owned by the stack: logs expire after LogRetentionInDays and are
+  # deleted with the stack. (Lambda's auto-created /aws/lambda/<function> groups never
+  # expire and outlive the stack, so each function is pointed at its group below.)
+  GetImageUrlLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/getImageUrl"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  CheckJobStatusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/checkJobStatus"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  ProcessImageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/processImage"
+      RetentionInDays: !Ref LogRetentionInDays
+
   # 5. Python Lambda Function (SOD_getImageUrl)
   GetImageUrlFunction:
     Type: AWS::Serverless::Function
@@ -133,6 +193,9 @@ Resources:
       Runtime: python3.14
       CodeUri: ./backend-lambda/
       Handler: get_image_url.lambda_handler
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref GetImageUrlLogGroup
       Environment:
         Variables:
           TARGET_BUCKET: !Ref UploadsBucket
@@ -166,6 +229,9 @@ Resources:
       Runtime: python3.14
       CodeUri: ./backend-lambda/
       Handler: check_image_status.lambda_handler
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref CheckJobStatusLogGroup
       Environment:
         Variables:
           DATABASE_NAME: !Ref SODJobStatusTable
@@ -190,6 +256,9 @@ Resources:
       Timeout: 60
       # Lambda CPU scales with memory; measure before lowering
       MemorySize: 3008
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref ProcessImageLogGroup
       Environment:
         Variables:
           DATABASE_NAME: !Ref SODJobStatusTable
@@ -231,5 +300,8 @@ Outputs:
     Description: "Name of the private uploads/results S3 Bucket"
     Value: !Ref UploadsBucket
   WebsiteURL:
-    Description: "URL for the hosted frontend website"
-    Value: !GetAtt HtmlStorageBucket.WebsiteURL
+    Description: "HTTPS URL for the hosted frontend website (CloudFront)"
+    Value: !Sub "https://${WebsiteDistribution.DomainName}"
+  DistributionId:
+    Description: "CloudFront distribution ID (deploy.sh invalidates its cache after uploads)"
+    Value: !Ref WebsiteDistribution

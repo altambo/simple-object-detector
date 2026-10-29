@@ -112,15 +112,17 @@ API_URL=$(aws cloudformation describe-stacks \
     --query "Stacks[0].Outputs[?OutputKey=='HttpApiUrl'].OutputValue" \
     --output text)
 
+DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+    --stack-name "${STACK_NAME}" \
+    --region "${REGION}" \
+    --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
+    --output text)
+
 # Safeguard check to ensure variables are not empty
 if [ -z "${BUCKET_NAME}" ] || [ "${BUCKET_NAME}" == "None" ]; then
     echo "❌ Error: Could not find an OutputKey named 'S3BucketName' in stack ${STACK_NAME}."
     exit 1
 fi
-
-# Clean up trailing slashes on WebsiteURL to prevent double-slashes in the output string
-CLEAN_WEBSITE_URL=$(echo "$WEBSITE_URL" | sed 's/\/$//')
-INDEX_HTML_URL="${CLEAN_WEBSITE_URL}/index.html"
 
 # 5. Inject Configuration dynamically into config.js as global variables
 echo "👉 Generating frontend configuration into config.js..."
@@ -145,9 +147,16 @@ for FILE in "${FILES_TO_UPLOAD[@]}"; do
     fi
 done
 
+# 7. Clear CloudFront's cache so visitors get the new files immediately
+echo "👉 Invalidating CloudFront cache (${DISTRIBUTION_ID})..."
+aws cloudfront create-invalidation \
+    --distribution-id "${DISTRIBUTION_ID}" \
+    --paths "/*" \
+    --query "Invalidation.Id" \
+    --output text
+
 echo "===================================================="
 echo " ✅ Deployment Completed! [${ENVIRONMENT}] website is live."
-echo " 🌐 Website Root URL: ${WEBSITE_URL}"
-echo " 📄 Direct Index URL: ${INDEX_HTML_URL}" # ✅ Prints your custom direct link
-echo " ⚡ API Endpoint:     ${API_URL}"
+echo " 🌐 Website URL:  ${WEBSITE_URL}"
+echo " ⚡ API Endpoint: ${API_URL}"
 echo "===================================================="
