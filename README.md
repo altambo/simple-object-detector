@@ -6,18 +6,7 @@ It detects the 80 everyday object classes of the [COCO dataset](https://cocodata
 
 ## How it works
 
-```
-                    ┌─▶ CloudFront (HTTPS) ──▶ private S3 bucket: index.html, main.js, config.js
-                    │
-Browser ────────────┼─▶ POST /          ──▶ GetImageUrlFunction ──▶ S3 uploads + DynamoDB + SQS
-                    │                                                                    │
-                    │                                                                    ▼
-                    │                                    ProcessImageFunction (ONNX Runtime container)
-                    │                                    detect → upload annotated image → DynamoDB
-                    │                                                                    │
-                    └─▶ GET /{imageId}  ──▶ SODCheckJobStatus ◀── DynamoDB ◀─────────────┘
-                        (every 2 s)         (status, summary, 15-minute link to the result)
-```
+![Flowchart: the browser uploads a photo or image URL; the upload API creates a job record and queues the job; the processor processes the image and writes the result to the job record; the browser checks the job status and shows the annotated image and summary](docs/how-it-works.jpg)
 
 1. The page is served over HTTPS by CloudFront from a private S3 bucket.
 2. **`POST /`** (API Gateway → `GetImageUrlFunction`) stores an uploaded image in the private uploads bucket (or records the image URL), creates a job in DynamoDB and puts it on an SQS queue.
