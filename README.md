@@ -26,7 +26,8 @@ Browser ──POST /──▶ API Gateway ──▶ GetImageUrlFunction ──�
 - **`ProcessImageFunction`** (`backend-container/`): x86_64 container Lambda running `yolov8m.onnx` directly with ONNX Runtime, numpy and Pillow (`detector.py`); there is no PyTorch or Ultralytics in the image, which keeps it small and cold starts short. It downloads the image, runs detection, uploads the annotated result and writes a detection summary and a 15-minute presigned URL to DynamoDB.
 - **`SODCheckJobStatus`** (`backend-lambda/check_image_status.py`): returns a job's status from DynamoDB.
 - **DynamoDB table (`SODJobStatusTable`)**: job status records.
-- **S3 buckets**: a public bucket hosts the static website; a separate private bucket holds uploads and results (expired after 7 days).
+- **CloudFront + S3**: the static website is served over HTTPS by a CloudFront distribution from a private S3 bucket (Origin Access Control); a separate private bucket holds uploads and results (expired after 7 days).
+- **CloudWatch Logs**: each function logs to a stack-owned log group that keeps logs for 30 days (`LogRetentionInDays` parameter) and is deleted with the stack.
 
 All resource names include the environment name, so `dev` and `prod` stacks can coexist in one account.
 
@@ -54,9 +55,9 @@ The script:
 3. Deletes the stack first if it is stuck in `ROLLBACK_COMPLETE` / `ROLLBACK_FAILED`.
 4. Runs `sam deploy` to stack `SimpleObjectDetector-<env>` in `us-east-1` (edit `REGION` in `deploy.sh` to change it).
 5. Writes `frontend/config.js` from the stack outputs.
-6. Uploads `index.html`, `main.js` and `config.js` to the website bucket.
+6. Uploads `index.html`, `main.js` and `config.js` to the website bucket and invalidates the CloudFront cache so the new files are served immediately.
 
-When it finishes, it prints the website URL and API endpoint. Open the index URL in a browser.
+When it finishes, it prints the website URL (`https://<id>.cloudfront.net`) and API endpoint. Open the website URL in a browser. On the first deploy, creating the CloudFront distribution adds several minutes.
 
 ## Local development and testing
 
